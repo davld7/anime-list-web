@@ -249,3 +249,114 @@ def test_unauthenticated_request_401_does_not_trigger_refresh():
 
     assert excinfo.value.status_code == 401
     assert refresh_calls == []
+
+
+def test_put_sends_method_and_json_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PUT"
+        assert request.url.path == "/api/v1/items/1"
+        assert request.read() == b'{"name":"Renamed"}'
+        return httpx.Response(200, json={"id": "1", "name": "Renamed"})
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(client.put("/api/v1/items/1", json={"name": "Renamed"}))
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "1", "name": "Renamed"}
+
+
+def test_put_with_token_sets_authorization_header():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer token123"
+        return httpx.Response(200, json={})
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    asyncio.run(client.put("/api/v1/items/1", json={}, token="token123"))
+
+
+def test_put_401_triggers_exactly_one_refresh_and_retry():
+    calls: list[str] = []
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        if len(calls) == 1:
+            return httpx.Response(401, json={"detail": "token expired"})
+        return httpx.Response(200, json={})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-new"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(
+        client.put("/api/v1/items/1", json={}, token="access-1", refresh_handler=refresh)
+    )
+
+    assert response.status_code == 200
+    assert calls == ["Bearer access-1", "Bearer access-new"]
+    assert refresh_calls == ["refresh"]
+
+
+def test_delete_sends_method_without_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        assert request.url.path == "/api/v1/items/1"
+        assert request.read() == b""
+        return httpx.Response(204)
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(client.delete("/api/v1/items/1"))
+
+    assert response.status_code == 204
+
+
+def test_delete_with_token_sets_authorization_header():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer token123"
+        return httpx.Response(204)
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    asyncio.run(client.delete("/api/v1/items/1", token="token123"))
+
+
+def test_delete_204_with_empty_body_is_not_an_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204, content=b"")
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(client.delete("/api/v1/items/1", token="token123"))
+
+    assert response.status_code == 204
+    assert response.text == ""
+
+
+def test_delete_401_triggers_exactly_one_refresh_and_retry():
+    calls: list[str] = []
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        if len(calls) == 1:
+            return httpx.Response(401, json={"detail": "token expired"})
+        return httpx.Response(204)
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-new"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(
+        client.delete("/api/v1/items/1", token="access-1", refresh_handler=refresh)
+    )
+
+    assert response.status_code == 204
+    assert calls == ["Bearer access-1", "Bearer access-new"]
+    assert refresh_calls == ["refresh"]

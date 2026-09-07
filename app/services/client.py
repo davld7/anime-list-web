@@ -168,3 +168,34 @@ class ApiClient:
         return await self.request(
             "POST", path, json=json, token=token, refresh_handler=refresh_handler, **kwargs
         )
+
+    async def put(
+        self,
+        path: str,
+        *,
+        json: Any = None,
+        token: str | None = None,
+        refresh_handler: RefreshHandler | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send a PUT request to the backend."""
+        return await self.request(
+            "PUT", path, json=json, token=token, refresh_handler=refresh_handler, **kwargs
+        )
+
+    async def delete(
+        self,
+        path: str,
+        *,
+        token: str | None = None,
+        refresh_handler: RefreshHandler | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send a DELETE request to the backend.
+
+        The backend responds ``204 No Content``; the response body is left for
+        the caller to handle (it is never JSON-parsed here).
+        """
+        return await self.request(
+            "DELETE", path, token=token, refresh_handler=refresh_handler, **kwargs
+        )

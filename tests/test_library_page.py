@@ -1,4 +1,4 @@
-"""Deterministic structural tests for the read-only library page.
+"""Deterministic structural tests for the anime library page.
 
 These tests build the page component and introspect its rendered component
 tree. No network, no real backend, no browser.
@@ -145,3 +145,106 @@ def test_library_page_uses_expected_icons():
 
     assert "LucideLibraryBig" in tags
     assert "LucideCircleAlert" in tags
+
+
+def _cond_exprs(component) -> list[str]:
+    """All condition expressions used in the component's cond nodes."""
+    exprs: list[str] = []
+    for node in _walk(component):
+        expr = getattr(getattr(node, "cond", None), "_js_expr", "") or ""
+        if expr:
+            exprs.append(expr)
+    return exprs
+
+
+def test_library_page_wires_create_button_to_form():
+    handlers = _event_handler_names(library_page())
+    contents = _text_contents(library_page())
+
+    assert any(content.strip().strip('"') == "Create Anime" for content in contents)
+    assert "open_create_form" in handlers
+
+
+def test_library_page_wires_edit_and_delete_card_actions():
+    handlers = _event_handler_names(library_page())
+    contents = _text_contents(library_page())
+
+    assert "open_edit_form" in handlers
+    assert "request_delete" in handlers
+    assert "delete_anime" in handlers
+    assert any(content.strip().strip('"') == "Edit" for content in contents)
+    assert any(content.strip().strip('"') == "Delete" for content in contents)
+
+
+def test_library_page_wires_form_field_setters():
+    handlers = _event_handler_names(library_page())
+
+    assert "set_name_input" in handlers
+    assert "set_description_input" in handlers
+    assert "set_episodes_input" in handlers
+    assert "set_season_input" in handlers
+    assert "set_genres_input" in handlers
+    assert "set_image_url_input" in handlers
+    assert "set_form_open" in handlers
+    assert "close_form" in handlers
+
+
+def test_library_page_wires_create_and_update_submit_handlers():
+    handlers = _event_handler_names(library_page())
+
+    assert "create_anime" in handlers
+    assert "update_anime" in handlers
+
+
+def test_library_page_wires_delete_confirmation_handlers():
+    handlers = _event_handler_names(library_page())
+
+    assert "cancel_delete" in handlers
+    assert "set_delete_confirmation_open" in handlers
+
+
+def test_library_page_form_dialog_contains_all_field_labels():
+    contents = [content.strip().strip('"') for content in _text_contents(library_page())]
+
+    for label in ["Name", "Description", "Episodes", "Season", "Genres", "Image URL"]:
+        assert label in contents
+    assert "Save Changes" in contents
+    assert "Delete Anime" in contents
+
+
+def test_library_page_binds_form_and_delete_error_messages():
+    contents = _text_contents(library_page())
+
+    assert any("form_error_message" in content for content in contents)
+    assert any("delete_error_message" in content for content in contents)
+    assert any("deleting_anime_name" in content for content in contents)
+
+
+def test_library_page_gates_create_on_write_permission():
+    exprs = _cond_exprs(library_page())
+
+    assert any("permissions" in expr and "write" in expr for expr in exprs)
+
+
+def test_library_page_gates_edit_and_delete_on_write_and_admin_permissions():
+    exprs = _cond_exprs(library_page())
+
+    assert any("permissions" in expr and "write" in expr for expr in exprs)
+    assert any("permissions" in expr and "admin" in expr for expr in exprs)
+
+
+def test_library_page_form_title_switches_on_editing_id():
+    exprs = _cond_exprs(library_page())
+
+    assert any("editing_anime_id" in expr for expr in exprs)
+
+
+def test_library_page_binds_form_open_and_delete_open_to_dialogs():
+    open_exprs: list[str] = []
+    for node in _walk(library_page()):
+        for prop in node.render().get("props", []) or []:
+            if str(prop).startswith("open:"):
+                open_exprs.append(str(prop))
+
+    assert any("form_open" in prop for prop in open_exprs)
+    assert any("delete_confirmation_open" in prop for prop in open_exprs)
