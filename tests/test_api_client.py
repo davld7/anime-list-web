@@ -84,3 +84,23 @@ def test_client_explicit_base_url_overrides_environment(monkeypatch):
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
     )
     assert client.base_url == "https://explicit.test"
+
+
+def test_request_with_token_sets_authorization_header():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer token123"
+        return httpx.Response(200, json={})
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    asyncio.run(client.get("/api/v1/items", token="token123"))
+
+
+def test_request_without_token_has_no_authorization_header():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
+        return httpx.Response(200, json={})
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    asyncio.run(client.get("/api/v1/items"))

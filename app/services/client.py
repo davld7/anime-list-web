@@ -48,15 +48,23 @@ class ApiClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
+        token: str | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a request to the backend and return the response.
+
+        Args:
+            token: Optional bearer token used to authenticate the request.
+                When provided it is sent as ``Authorization: Bearer <token>``.
 
         Raises:
             ApiError: If the request could not be sent or the backend returned
                 a non-success HTTP status.
         """
         url = f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
+        headers = dict(kwargs.pop("headers", {}))
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,
@@ -64,7 +72,12 @@ class ApiClient:
                 transport=self._transport,
             ) as client:
                 response = await client.request(
-                    method, path, params=params, json=json, **kwargs
+                    method,
+                    path,
+                    params=params,
+                    json=json,
+                    headers=headers,
+                    **kwargs,
                 )
         except httpx.TransportError as exc:
             raise ApiError(
@@ -82,13 +95,23 @@ class ApiClient:
         return response
 
     async def get(
-        self, path: str, *, params: dict[str, Any] | None = None, **kwargs: Any
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        token: str | None = None,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Send a GET request to the backend."""
-        return await self.request("GET", path, params=params, **kwargs)
+        return await self.request("GET", path, params=params, token=token, **kwargs)
 
     async def post(
-        self, path: str, *, json: Any = None, **kwargs: Any
+        self,
+        path: str,
+        *,
+        json: Any = None,
+        token: str | None = None,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Send a POST request to the backend."""
-        return await self.request("POST", path, json=json, **kwargs)
+        return await self.request("POST", path, json=json, token=token, **kwargs)
