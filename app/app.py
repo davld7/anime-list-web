@@ -6,6 +6,7 @@ from app.pages.dashboard import dashboard_page
 from app.pages.library import library_page
 from app.pages.login import login_page
 from app.state.auth import AuthState
+from app.state.library import LibraryState
 
 app = rx.App()
 
@@ -22,7 +23,10 @@ app.add_page(
     route="/library",
     title="Library | Anime List",
     description="Your anime library.",
-    on_load=AuthState.guard_authenticated,
+    on_load=[
+        AuthState.guard_authenticated,
+        LibraryState.load_page,
+    ],
 )
 
 app.add_page(
