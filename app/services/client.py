@@ -1,5 +1,6 @@
 """Centralized async HTTP client for the anime-list-api backend."""
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -7,6 +8,12 @@ import httpx
 from app.config import get_api_base_url
 
 DEFAULT_TIMEOUT = 10.0
+
+RefreshHandler = Callable[[], Awaitable[str | None]]
+"""An async callback that performs a token refresh.
+
+Returns the new access token on success, or ``None`` if refresh failed.
+"""
 
 
 class ApiError(Exception):
@@ -49,6 +56,7 @@ class ApiClient:
         params: dict[str, Any] | None = None,
         json: Any = None,
         token: str | None = None,
+        refresh_handler: RefreshHandler | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a request to the backend and return the response.
@@ -56,15 +64,54 @@ class ApiClient:
         Args:
             token: Optional bearer token used to authenticate the request.
                 When provided it is sent as ``Authorization: Bearer <token>``.
+            refresh_handler: Optional async callable (``() -> str | None``) that
+                performs a token refresh and returns the new access token, or
+                ``None`` if refresh failed. When provided together with ``token``,
+                a ``401`` from an authenticated request triggers at most one refresh
+                followed by at most one retry with the new token.
 
         Raises:
             ApiError: If the request could not be sent or the backend returned
                 a non-success HTTP status.
         """
         url = f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
-        headers = dict(kwargs.pop("headers", {}))
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        base_headers = dict(kwargs.pop("headers", {}))
+        attempt = 0
+        while True:
+            headers = dict(base_headers)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            try:
+                return await self._send(
+                    method, path, params=params, json=json, headers=headers, url=url, **kwargs
+                )
+            except ApiError as exc:
+                if (
+                    exc.status_code == 401
+                    and token
+                    and refresh_handler is not None
+                    and attempt == 0
+                ):
+                    attempt = 1
+                    new_token = await refresh_handler()
+                    if new_token is None:
+                        raise exc
+                    token = new_token
+                    continue
+                raise
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None,
+        json: Any,
+        headers: dict[str, str],
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Perform a single HTTP request, translating failures to ``ApiError``."""
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,
@@ -100,10 +147,13 @@ class ApiClient:
         *,
         params: dict[str, Any] | None = None,
         token: str | None = None,
+        refresh_handler: RefreshHandler | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a GET request to the backend."""
-        return await self.request("GET", path, params=params, token=token, **kwargs)
+        return await self.request(
+            "GET", path, params=params, token=token, refresh_handler=refresh_handler, **kwargs
+        )
 
     async def post(
         self,
@@ -111,7 +161,10 @@ class ApiClient:
         *,
         json: Any = None,
         token: str | None = None,
+        refresh_handler: RefreshHandler | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         """Send a POST request to the backend."""
-        return await self.request("POST", path, json=json, token=token, **kwargs)
+        return await self.request(
+            "POST", path, json=json, token=token, refresh_handler=refresh_handler, **kwargs
+        )

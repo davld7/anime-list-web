@@ -65,6 +65,31 @@ class AuthState(rx.State):
             except AuthError:
                 pass
 
+    async def _refresh(self) -> str | None:
+        """Exchange the current refresh token for a rotated token pair.
+
+        On success both stored tokens are replaced together and the new access
+        token is returned so the caller can retry the original request. On any
+        failure the local session is cleared and ``None`` is returned; the
+        original request must not be retried.
+
+        This is used internally by ``ApiClient``'s refresh/retry path. It uses a
+        bare client (no refresh handler) so a refresh never re-enters itself.
+        """
+        refresh_token = self._refresh_token
+        if not refresh_token:
+            self._clear_session()
+            return None
+        try:
+            tokens = await auth_service.refresh(self._make_client(), refresh_token=refresh_token)
+        except AuthError as exc:
+            self._clear_session()
+            self.error_message = exc.message
+            return None
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token
+        return tokens.access_token
+
     def _clear_session(self) -> None:
         """Reset all session information to the logged-out default."""
         self._access_token = ""

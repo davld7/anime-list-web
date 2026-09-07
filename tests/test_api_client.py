@@ -104,3 +104,148 @@ def test_request_without_token_has_no_authorization_header():
     client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
 
     asyncio.run(client.get("/api/v1/items"))
+
+
+def test_authenticated_request_succeeds_without_refresh():
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer access-1"
+        return httpx.Response(200, json={"ok": True})
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    async def refresh():
+        refresh_calls.append("called")
+        return "access-2"
+
+    response = asyncio.run(client.get("/api/v1/items", token="access-1", refresh_handler=refresh))
+
+    assert response.status_code == 200
+    assert refresh_calls == []
+
+
+def test_401_triggers_exactly_one_refresh_and_retry_with_new_token():
+    calls: list[str] = []
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        if len(calls) == 1:
+            return httpx.Response(401, json={"detail": "token expired"})
+        return httpx.Response(200, json={"ok": True})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-new"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    response = asyncio.run(client.get("/api/v1/items", token="access-1", refresh_handler=refresh))
+
+    assert response.status_code == 200
+    assert calls == ["Bearer access-1", "Bearer access-new"]
+    assert refresh_calls == ["refresh"]
+
+
+def test_refresh_failure_does_not_retry_original_request():
+    calls: list[str] = []
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        return httpx.Response(401, json={"detail": "token expired"})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return None
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ApiError) as excinfo:
+        asyncio.run(client.get("/api/v1/items", token="access-1", refresh_handler=refresh))
+
+    error = excinfo.value
+    assert error.status_code == 401
+    assert calls == ["Bearer access-1"]
+    assert refresh_calls == ["refresh"]
+
+
+def test_retry_that_returns_401_does_not_trigger_second_refresh():
+    calls: list[str] = []
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        return httpx.Response(401, json={"detail": "still bad"})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-new"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ApiError) as excinfo:
+        asyncio.run(client.get("/api/v1/items", token="access-1", refresh_handler=refresh))
+
+    error = excinfo.value
+    assert error.status_code == 401
+    assert calls == ["Bearer access-1", "Bearer access-new"]
+    assert refresh_calls == ["refresh"]
+
+
+def test_no_infinite_loop_when_refresh_returns_same_failing_token():
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "nope"})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-1"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ApiError):
+        asyncio.run(client.get("/api/v1/items", token="access-1", refresh_handler=refresh))
+
+    assert refresh_calls == ["refresh"]
+
+
+def test_non_401_error_does_not_trigger_refresh():
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "down"})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-new"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ApiError) as excinfo:
+        asyncio.run(client.get("/api/v1/items", token="access-1", refresh_handler=refresh))
+
+    assert excinfo.value.status_code == 503
+    assert refresh_calls == []
+
+
+def test_unauthenticated_request_401_does_not_trigger_refresh():
+    refresh_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
+        return httpx.Response(401, json={"detail": "nope"})
+
+    async def refresh():
+        refresh_calls.append("refresh")
+        return "access-new"
+
+    client = ApiClient(base_url="https://api.test", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ApiError) as excinfo:
+        asyncio.run(client.get("/api/v1/items", refresh_handler=refresh))
+
+    assert excinfo.value.status_code == 401
+    assert refresh_calls == []

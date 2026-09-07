@@ -139,3 +139,81 @@ def test_logout_surfaces_transport_error_as_auth_error():
 
     with pytest.raises(AuthError):
         asyncio.run(auth.logout(_client(handler), refresh_token="refresh-1"))
+
+
+def test_refresh_sends_correct_request():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/auth/refresh"
+        assert json.loads(request.content) == {"refresh_token": "refresh-1"}
+        return httpx.Response(
+            200,
+            json={"access_token": "access-2", "refresh_token": "refresh-2", "token_type": "bearer"},
+        )
+
+    tokens = asyncio.run(auth.refresh(_client(handler), refresh_token="refresh-1"))
+
+    assert tokens.access_token == "access-2"
+    assert tokens.refresh_token == "refresh-2"
+    assert tokens.token_type == "bearer"
+
+
+def test_refresh_never_submits_auth_header():
+    captures: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captures.append(request)
+        return httpx.Response(200, json={"access_token": "a", "refresh_token": "r"})
+
+    asyncio.run(auth.refresh(_client(handler), refresh_token="refresh-1"))
+
+    assert "Authorization" not in captures[0].headers
+
+
+def test_refresh_invalid_token_returns_session_expired_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "Invalid or expired refresh token"})
+
+    with pytest.raises(AuthError) as excinfo:
+        asyncio.run(auth.refresh(_client(handler), refresh_token="stale"))
+
+    assert excinfo.value.message == "Your session has expired. Please log in again."
+
+
+def test_refresh_backend_error_returns_generic_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "downstream"})
+
+    with pytest.raises(AuthError) as excinfo:
+        asyncio.run(auth.refresh(_client(handler), refresh_token="refresh-1"))
+
+    assert excinfo.value.message == "Authentication service error."
+
+
+def test_refresh_transport_failure_returns_unavailable_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    with pytest.raises(AuthError) as excinfo:
+        asyncio.run(auth.refresh(_client(handler), refresh_token="refresh-1"))
+
+    assert excinfo.value.message == "Unable to reach the authentication service."
+
+
+def test_refresh_malformed_response_returns_unexpected_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>proxy page</html>")
+
+    with pytest.raises(AuthError) as excinfo:
+        asyncio.run(auth.refresh(_client(handler), refresh_token="refresh-1"))
+
+    assert excinfo.value.message == "Unexpected response from the authentication service."
+
+
+def test_refresh_missing_token_field_returns_unexpected_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"access_token": "a"})
+
+    with pytest.raises(AuthError) as excinfo:
+        asyncio.run(auth.refresh(_client(handler), refresh_token="refresh-1"))
+
+    assert excinfo.value.message == "Unexpected response from the authentication service."

@@ -10,8 +10,9 @@ import json
 from unittest.mock import patch
 
 import httpx
+import pytest
 
-from app.services.client import ApiClient
+from app.services.client import ApiClient, ApiError
 from app.state.auth import AuthState
 
 
@@ -153,3 +154,148 @@ def test_tokens_not_exposed_through_public_state():
     assert "_refresh_token" not in state.vars
     snapshot = state.dict()
     assert not any("access-1" in str(v) or "refresh-1" in str(v) for v in snapshot.values())
+
+
+def _refresh_response():
+    return httpx.Response(
+        200,
+        json={"access_token": "access-2", "refresh_token": "refresh-2", "token_type": "bearer"},
+    )
+
+
+async def _do_refresh(state: AuthState, handler):
+    with patch.object(AuthState, "_make_client", return_value=_client(handler)):
+        return await state._refresh()
+
+
+def test_refresh_success_replaces_both_tokens():
+    state = AuthState()
+    asyncio.run(_login(state, lambda request: _token_response()))
+    assert state._access_token == "access-1"
+    assert state._refresh_token == "refresh-1"
+
+    result = asyncio.run(_do_refresh(state, lambda request: _refresh_response()))
+
+    assert result == "access-2"
+    assert state._access_token == "access-2"
+    assert state._refresh_token == "refresh-2"
+    assert state.is_authenticated is True
+    assert state.error_message == ""
+
+
+def test_refresh_uses_stored_refresh_token():
+    seen_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/auth/refresh"
+        seen_body.update(json.loads(request.content))
+        return _refresh_response()
+
+    state = AuthState()
+    asyncio.run(_login(state, lambda request: _token_response()))
+
+    asyncio.run(_do_refresh(state, handler))
+
+    assert seen_body == {"refresh_token": "refresh-1"}
+
+
+def test_refresh_failure_clears_session_and_returns_None():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "Invalid or expired refresh token"})
+
+    state = AuthState()
+    asyncio.run(_login(state, lambda request: _token_response()))
+
+    result = asyncio.run(_do_refresh(state, handler))
+
+    assert result is None
+    assert state.is_authenticated is False
+    assert state._access_token == ""
+    assert state._refresh_token == ""
+    assert state.username == ""
+    assert state.error_message == "Your session has expired. Please log in again."
+
+
+def test_refresh_transport_failure_clears_session():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    state = AuthState()
+    asyncio.run(_login(state, lambda request: _token_response()))
+
+    result = asyncio.run(_do_refresh(state, handler))
+
+    assert result is None
+    assert state.is_authenticated is False
+    assert state._refresh_token == ""
+
+
+def test_refresh_without_stored_token_clears_and_returns_None():
+    state = AuthState()
+
+    result = asyncio.run(_do_refresh(state, lambda request: httpx.Response(200)))
+
+    assert result is None
+    assert state.is_authenticated is False
+
+
+def test_client_401_triggers_refresh_once_and_retries_with_new_token():
+    business_calls: list[dict] = []
+    refresh_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal refresh_calls
+        if request.url.path == "/auth/refresh":
+            refresh_calls += 1
+            assert json.loads(request.content) == {"refresh_token": "refresh-1"}
+            return _refresh_response()
+        if request.url.path.startswith("/auth/login"):
+            return _token_response()
+        business_calls.append({"auth": request.headers.get("Authorization", "")})
+        if len(business_calls) == 1:
+            return httpx.Response(401, json={"detail": "token expired"})
+        return httpx.Response(200, json={"ok": True})
+
+    state = AuthState()
+    with patch.object(AuthState, "_make_client", return_value=_client(handler)):
+        asyncio.run(state.login("alice", "password"))
+        client = state._make_client()
+        response = asyncio.run(
+            client.get("/api/v1/items", token=state._access_token, refresh_handler=state._refresh)
+        )
+
+    assert response.status_code == 200
+    assert business_calls[0]["auth"] == "Bearer access-1"
+    assert business_calls[1]["auth"] == "Bearer access-2"
+    assert refresh_calls == 1
+    assert state._access_token == "access-2"
+    assert state._refresh_token == "refresh-2"
+
+
+def test_client_refresh_failure_clears_session_and_does_not_retry_business_request():
+    business_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/refresh":
+            return httpx.Response(401, json={"detail": "Invalid or expired refresh token"})
+        if request.url.path.startswith("/auth/login"):
+            return _token_response()
+        business_calls.append(request.headers.get("Authorization", ""))
+        return httpx.Response(401, json={"detail": "token expired"})
+
+    state = AuthState()
+    with patch.object(AuthState, "_make_client", return_value=_client(handler)):
+        asyncio.run(state.login("alice", "password"))
+        client = state._make_client()
+        with pytest.raises(ApiError):
+            asyncio.run(
+                client.get(
+                    "/api/v1/items", token=state._access_token, refresh_handler=state._refresh
+                )
+            )
+
+    assert business_calls == ["Bearer access-1"]
+    assert state.is_authenticated is False
+    assert state._access_token == ""
+    assert state._refresh_token == ""
+    assert state.error_message == "Your session has expired. Please log in again."
