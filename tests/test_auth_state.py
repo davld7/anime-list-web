@@ -54,12 +54,49 @@ def _session_handler():
 
 async def _login(state: AuthState, handler, username="alice", password="password"):
     with patch.object(AuthState, "_make_client", return_value=_client(handler)):
-        await state.login(username, password)
+        return await state.login(username, password)
 
 
 async def _logout(state: AuthState, handler):
     with patch.object(AuthState, "_make_client", return_value=_client(handler)):
-        await state.logout()
+        return await state.logout()
+
+
+async def _submit_login(state: AuthState, handler):
+    with patch.object(AuthState, "_make_client", return_value=_client(handler)):
+        return await state.submit_login()
+
+
+def _redirect_path(result) -> str | None:
+    """Extract the redirect path from an event handler result, if any."""
+    specs = result if isinstance(result, list) else [result] if result else []
+    for spec in specs:
+        for arg, value in getattr(spec, "args", []) or []:
+            if getattr(arg, "_js_expr", None) == "path":
+                return getattr(value, "_var_value", None)
+    return None
+
+
+def test_successful_login_returns_redirect_to_dashboard():
+    state = AuthState()
+    result = asyncio.run(_login(state, _session_handler()))
+
+    assert _redirect_path(result) == "/"
+    assert state.is_authenticated is True
+
+
+def test_invalid_credentials_return_no_redirect():
+    state = AuthState()
+    result = asyncio.run(
+        _login(
+            state,
+            lambda request: httpx.Response(401, json={"detail": "Invalid username or password"}),
+            password="wrong",
+        )
+    )
+
+    assert result is None
+    assert state.is_authenticated is False
 
 
 def test_successful_login_stores_session():
@@ -126,8 +163,9 @@ def test_logout_clears_session_and_tokens():
     asyncio.run(_login(state, _session_handler()))
     assert state.is_authenticated is True
 
-    asyncio.run(_logout(state, lambda request: httpx.Response(204)))
+    result = asyncio.run(_logout(state, lambda request: httpx.Response(204)))
 
+    assert _redirect_path(result) == "/login"
     assert state.is_authenticated is False
     assert state.username == ""
     assert state._access_token == ""
@@ -136,6 +174,88 @@ def test_logout_clears_session_and_tokens():
     assert state.permissions == []
     assert state.active is False
     assert state.error_message == ""
+
+
+def test_logout_returns_redirect_when_nothing_to_revoke():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/auth/login"):
+            return httpx.Response(401, json={"detail": "nope"})
+        raise AssertionError("logout should not reach the backend")
+
+    state = AuthState()
+
+    result = asyncio.run(_logout(state, handler))
+
+    assert _redirect_path(result) == "/login"
+    assert state._refresh_token == ""
+
+
+def test_guard_dashboard_redirects_anonymous_to_login():
+    state = AuthState()
+
+    result = state.guard_dashboard()
+
+    assert _redirect_path(result) == "/login"
+
+
+def test_guard_dashboard_allows_authenticated():
+    state = AuthState()
+    asyncio.run(_login(state, _session_handler()))
+
+    result = state.guard_dashboard()
+
+    assert result is None
+
+
+def test_guard_login_redirects_authenticated_to_dashboard():
+    state = AuthState()
+    asyncio.run(_login(state, _session_handler()))
+
+    result = state.guard_login()
+
+    assert _redirect_path(result) == "/"
+
+
+def test_guard_login_allows_anonymous():
+    state = AuthState()
+
+    result = state.guard_login()
+
+    assert result is None
+
+
+def test_submit_login_success_redirects_and_clears_password():
+    state = AuthState()
+    state.username_input = "  alice  "
+    state.password_input = "password"
+
+    result = asyncio.run(_submit_login(state, _session_handler()))
+
+    assert _redirect_path(result) == "/"
+    assert state.is_authenticated is True
+    assert state.username == "alice"
+    assert state.password_input == ""
+    assert state.submitting is False
+
+
+def test_submit_login_failure_keeps_username_and_clears_password():
+    state = AuthState()
+    state.username_input = "alice"
+    state.password_input = "wrong"
+
+    result = asyncio.run(
+        _submit_login(
+            state,
+            lambda request: httpx.Response(401, json={"detail": "Invalid username or password"}),
+        )
+    )
+
+    assert result is None
+    assert state.is_authenticated is False
+    assert state.username_input == "alice"
+    assert state.password_input == ""
+    assert state.submitting is False
+    assert state.error_message == "Invalid username or password."
 
 
 def test_logout_revokes_refresh_token_serverside():

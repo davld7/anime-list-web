@@ -5,10 +5,14 @@ never synchronized to the browser. Only safe session metadata is exposed.
 """
 
 import reflex as rx
+from reflex.event import EventSpec
 
 from app.services import auth as auth_service
 from app.services.auth import AuthError
 from app.services.client import ApiClient
+
+LOGIN_ROUTE = "/login"
+DASHBOARD_ROUTE = "/"
 
 
 class AuthState(rx.State):
@@ -27,6 +31,9 @@ class AuthState(rx.State):
     user_id: str | None = None
     permissions: list[str] = []
     active: bool = False
+    username_input: str = ""
+    password_input: str = ""
+    submitting: bool = False
 
     @classmethod
     def _make_client(cls) -> ApiClient:
@@ -34,13 +41,16 @@ class AuthState(rx.State):
         return ApiClient()
 
     @rx.event
-    async def login(self, username: str, password: str) -> None:
+    async def login(self, username: str, password: str) -> EventSpec | None:
         """Authenticate against the backend and load the current user.
 
         The token pair is stored first, then identity/permissions are fetched
         from `/auth/me`. On any failure the session is left (or returned to)
         unauthenticated and a safe error message is recorded; a partially
         initialized session is never left active.
+
+        Returns:
+            A redirect to the authenticated home on success, otherwise ``None``.
         """
         self._clear_session()
         try:
@@ -49,10 +59,13 @@ class AuthState(rx.State):
             )
         except AuthError as exc:
             self.error_message = exc.message
-            return
+            return None
         self._access_token = tokens.access_token
         self._refresh_token = tokens.refresh_token
-        await self.load_user()
+        success = await self.load_user()
+        if success:
+            return rx.redirect(DASHBOARD_ROUTE)
+        return None
 
     async def load_user(self) -> bool:
         """Fetch the authenticated user's identity and permissions.
@@ -85,19 +98,70 @@ class AuthState(rx.State):
         return True
 
     @rx.event
-    async def logout(self) -> None:
+    def set_username_input(self, value: str) -> None:
+        """Update the username input field."""
+        self.username_input = value
+
+    @rx.event
+    def set_password_input(self, value: str) -> None:
+        """Update the password input field."""
+        self.password_input = value
+
+    @rx.event
+    async def submit_login(self, form_data: dict | None = None) -> EventSpec | None:
+        """Submit the login form using the current input values.
+
+        Reads the username/password inputs, forwards to :meth:`login`, and
+        passes through the redirect on success. The password field and the
+        submitting flag are always reset, so a failed attempt leaves the
+        username in place but never retains the entered password.
+
+        Args:
+            form_data: Submitted form values (unused; inputs are controlled).
+
+        Returns:
+            The redirect produced by :meth:`login` on success, otherwise ``None``.
+        """
+        self.submitting = True
+        try:
+            return await self.login(self.username_input.strip(), self.password_input)
+        finally:
+            self.submitting = False
+            self.password_input = ""
+
+    @rx.event
+    def guard_dashboard(self) -> EventSpec | None:
+        """UX guard for the authenticated home: send anonymous users to login."""
+        if not self.is_authenticated:
+            return rx.redirect(LOGIN_ROUTE)
+        return None
+
+    @rx.event
+    def guard_login(self) -> EventSpec | None:
+        """UX guard for the login page: send authenticated users home."""
+        if self.is_authenticated:
+            return rx.redirect(DASHBOARD_ROUTE)
+        return None
+
+    @rx.event
+    async def logout(self) -> EventSpec:
         """Clear the local session and best-effort revoke the refresh token.
 
         The local session always clears; a failed server-side revocation is
         not surfaced because the session is already gone.
+
+        Returns:
+            A redirect to the login page.
         """
         refresh_token = self._refresh_token
         self._clear_session()
+        self.password_input = ""
         if refresh_token:
             try:
                 await auth_service.logout(self._make_client(), refresh_token=refresh_token)
             except AuthError:
                 pass
+        return rx.redirect(LOGIN_ROUTE)
 
     async def _refresh(self) -> str | None:
         """Exchange the current refresh token for a rotated token pair.
