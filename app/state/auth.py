@@ -24,6 +24,9 @@ class AuthState(rx.State):
     username: str = ""
     is_authenticated: bool = False
     error_message: str = ""
+    user_id: str | None = None
+    permissions: list[str] = []
+    active: bool = False
 
     @classmethod
     def _make_client(cls) -> ApiClient:
@@ -32,10 +35,12 @@ class AuthState(rx.State):
 
     @rx.event
     async def login(self, username: str, password: str) -> None:
-        """Authenticate against the backend and store the session.
+        """Authenticate against the backend and load the current user.
 
-        On any failure the session is left (or returned to) unauthenticated
-        and a safe error message is recorded.
+        The token pair is stored first, then identity/permissions are fetched
+        from `/auth/me`. On any failure the session is left (or returned to)
+        unauthenticated and a safe error message is recorded; a partially
+        initialized session is never left active.
         """
         self._clear_session()
         try:
@@ -47,8 +52,37 @@ class AuthState(rx.State):
             return
         self._access_token = tokens.access_token
         self._refresh_token = tokens.refresh_token
-        self.username = username
+        await self.load_user()
+
+    async def load_user(self) -> bool:
+        """Fetch the authenticated user's identity and permissions.
+
+        Uses the stored access token through the authenticated client path, so
+        the existing refresh-once/retry-once behavior applies. On failure the
+        session is cleared via the existing lifecycle and ``False`` is returned.
+
+        Returns:
+            ``True`` if the identity was loaded successfully, ``False`` otherwise.
+        """
+        token = self._access_token
+        if not token:
+            self._clear_session()
+            return False
+        try:
+            user = await auth_service.fetch_me(
+                self._make_client(), token=token, refresh_handler=self._refresh
+            )
+        except AuthError as exc:
+            self._clear_session()
+            self.error_message = exc.message
+            return False
+        self.user_id = user.id
+        self.username = user.username
+        self.permissions = list(user.permissions)
+        self.active = user.active
         self.is_authenticated = True
+        self.error_message = ""
+        return True
 
     @rx.event
     async def logout(self) -> None:
@@ -97,3 +131,6 @@ class AuthState(rx.State):
         self.username = ""
         self.is_authenticated = False
         self.error_message = ""
+        self.user_id = None
+        self.permissions = []
+        self.active = False
