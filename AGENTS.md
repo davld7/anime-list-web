@@ -48,6 +48,14 @@ anime-list-api          (FastAPI backend — source of truth)
 - **Never bypass backend authorization.**
 - Do not expose secrets or tokens in logs.
 
+### Secret Handling
+
+- Real secret values must never be read, exposed, copied, or modified.
+- `.env` files and other secret-bearing files are always out of scope.
+- When inspecting another repository, agents may inspect source code, schemas, tests, documentation, and `.env.example` files when necessary, but must not inspect real secret values.
+- Credentials must never be retrieved merely because they are accessible.
+- Secrets must never appear in reports, logs, diffs, commits, or generated files.
+
 ## Reflex State
 
 - Reflex State is server-side and scoped to the user session.
