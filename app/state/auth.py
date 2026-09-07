@@ -130,8 +130,8 @@ class AuthState(rx.State):
             self.password_input = ""
 
     @rx.event
-    def guard_dashboard(self) -> EventSpec | None:
-        """UX guard for the authenticated home: send anonymous users to login."""
+    def guard_authenticated(self) -> EventSpec | None:
+        """UX guard for the authenticated area: send anonymous users to login."""
         if not self.is_authenticated:
             return rx.redirect(LOGIN_ROUTE)
         return None

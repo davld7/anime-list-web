@@ -190,19 +190,19 @@ def test_logout_returns_redirect_when_nothing_to_revoke():
     assert state._refresh_token == ""
 
 
-def test_guard_dashboard_redirects_anonymous_to_login():
+def test_guard_authenticated_redirects_anonymous_to_login():
     state = AuthState()
 
-    result = state.guard_dashboard()
+    result = state.guard_authenticated()
 
     assert _redirect_path(result) == "/login"
 
 
-def test_guard_dashboard_allows_authenticated():
+def test_guard_authenticated_allows_authenticated():
     state = AuthState()
     asyncio.run(_login(state, _session_handler()))
 
-    result = state.guard_dashboard()
+    result = state.guard_authenticated()
 
     assert result is None
 
